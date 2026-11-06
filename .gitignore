@@ -1,0 +1,32 @@
+*.o
+*.so
+*.so.new
+VK_LAYER_FO4HUD_overlay.json
+imgui.ini
+
+.venv/
+.venv-*/
+.venv-mcp/
+__pycache__/
+.pytest_cache/
+assets/dialogue_affinity.json
+assets/maps/
+
+# Local reverse-engineering databases and downloaded address libraries.
+*.i64
+*.idb
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+version-*.bin
+
+# Local credentials and crash evidence.
+.env
+.env.*
+!.env.example
+*.log
+core
+core.*
+crash-investigation*/

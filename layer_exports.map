@@ -1,0 +1,7 @@
+{
+    global:
+        fo4hud_vk*;
+        vkNegotiateLoaderLayerInterfaceVersion;
+    local:
+        *;
+};
