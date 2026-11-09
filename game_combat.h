@@ -67,6 +67,8 @@ void fo4hud_combat_set_unlimited_action_points(bool enabled);
 bool fo4hud_combat_no_recoil();
 void fo4hud_combat_set_no_recoil(bool enabled);
 bool fo4hud_combat_auto_loot();
+bool fo4hud_combat_loot_vendor_chests();
+void fo4hud_combat_set_loot_vendor_chests(bool enabled);
 bool fo4hud_combat_auto_harvest();
 void fo4hud_combat_set_auto_loot(bool enabled);
 void fo4hud_combat_set_auto_harvest(bool enabled);

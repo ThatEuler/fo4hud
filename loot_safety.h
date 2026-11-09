@@ -81,7 +81,8 @@ bool fo4hud_loot_alias_array_exempt(uintptr_t node, Reader& read,
 template<class Reader>
 const char* fo4hud_loot_extra_reason(uintptr_t extra, Reader&& read,
                                    bool corpse_alias_exceptions = false,
-                                   bool (*scripts_clear)(uintptr_t) = nullptr) {
+                                   bool (*scripts_clear)(uintptr_t) = nullptr,
+                                   bool allow_locks = false) {
     if (!extra) return nullptr;
     uintptr_t node = 0;
     if (!read(extra + 8, node)) return "Safety data unavailable";
@@ -98,6 +99,7 @@ const char* fo4hud_loot_extra_reason(uintptr_t extra, Reader&& read,
                 return "Quest-linked";
             case 0x2A: // ExtraLock: leave lock-bearing objects manual, even unlocked.
             case 0xA3: // ExtraLockList
+                if (allow_locks) break;
                 return "Lock interaction required";
             case 0x52: // ExtraActivateRef
             case 0x53: // ExtraActivateRefChildren
@@ -117,7 +119,8 @@ const char* fo4hud_loot_extra_reason(uintptr_t extra, Reader&& read,
 
 template<class Reader>
 const char* fo4hud_loot_reference_reason(uintptr_t reference, Reader&& read,
-                                        bool (*scripts_clear)(uintptr_t) = nullptr) {
+                                        bool (*scripts_clear)(uintptr_t) = nullptr,
+                                        bool allow_locks = false) {
     uintptr_t extra = 0;
     if (!reference || !read(reference + 0x100, extra)) return "Safety data unavailable";
     uint8_t type = 0;
@@ -125,5 +128,5 @@ const char* fo4hud_loot_reference_reason(uintptr_t reference, Reader&& read,
     const bool corpse = read(reference + 0x1A, type) && type == 65 &&
         read(reference + 0x130, state) &&
         (((state >> 17) & 0xF) == 1 || ((state >> 17) & 0xF) == 2);
-    return fo4hud_loot_extra_reason(extra, read, corpse, scripts_clear);
+    return fo4hud_loot_extra_reason(extra, read, corpse, scripts_clear, allow_locks);
 }

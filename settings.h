@@ -24,6 +24,7 @@ struct OverlaySettings {
     bool invulnerable = false;
     bool unlimited_action_points = false;
     bool no_recoil = false;
+    bool loot_vendor_chests = false;
     bool auto_loot = false;
     bool auto_loot_inventories = false;
     bool auto_harvest = false;

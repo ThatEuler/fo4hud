@@ -1,6 +1,7 @@
 #include "game_entities.h"
 #include "loot_categories.h"
 #include "loot_playability.h"
+#include "vendor_chests.h"
 
 #include <sys/uio.h>
 #include <sys/stat.h>
@@ -327,6 +328,16 @@ void classify_radar_reference(Fo4Entity& entity) {
     // TESFullName contains a BGSLocalizedString eight bytes into the mixin.
     const uintptr_t name_offset = type == 0x1F ? 0x88 : type == 0x32 ? 0xC0 : 0x70;
     entity.name = read_pooled_string(base + name_offset);
+    if (const char* vendor = fo4hud_vendor_chest_name(entity.address)) {
+        entity.vendor_chest = true;
+        entity.name = vendor;
+        uintptr_t inventory = 0;
+        if (!read_value(entity.address + 0xF8, inventory) || !inventory) {
+            uint32_t base_count = 0;
+            if (!read_value(base + 0x78, base_count) || base_count)
+                entity.inventory_state = Fo4InventoryState::Unknown;
+        }
+    }
 }
 
 std::optional<std::string> read_checked_pooled_string(uintptr_t field) {
@@ -1201,7 +1212,8 @@ bool Fo4EntityScanOptions::operator==(const Fo4EntityScanOptions& o) const {
     return actor_range == o.actor_range && radar_range == o.radar_range &&
            loot_range == o.loot_range && trap_range == o.trap_range && radar_categories == o.radar_categories &&
            actor_names == o.actor_names && corpse_inventories == o.corpse_inventories && loot_items == o.loot_items &&
-           loot_inventories == o.loot_inventories && harvest == o.harvest;
+           loot_inventories == o.loot_inventories && harvest == o.harvest &&
+           loot_vendor_chests == o.loot_vendor_chests;
 }
 
 struct Fo4EntityRefresh::State {
@@ -1252,8 +1264,8 @@ struct Fo4EntityRefresh::State {
     size_t inventory_cursor = 0;
 
     bool want_actors() const { return options.actor_range > 0 || (options.radar_categories & (1 << 4)); }
-    bool want_world() const { return (options.radar_categories & 0x2E) || options.loot_items || options.loot_inventories || options.harvest || options.trap_range > 0; }
-    bool want_inventories() const { return options.corpse_inventories || options.loot_inventories || (options.radar_categories & ((1 << 2) | (1 << 4))); }
+    bool want_world() const { return (options.radar_categories & 0x2E) || options.loot_items || options.loot_inventories || options.loot_vendor_chests || options.harvest || options.trap_range > 0; }
+    bool want_inventories() const { return options.corpse_inventories || options.loot_inventories || options.loot_vendor_chests || (options.radar_categories & ((1 << 2) | (1 << 4))); }
     double distance(const Fo4Entity& e, bool horizontal = false) const {
         double result = 0;
         for (int i = 0; i < (horizontal ? 2 : 3); ++i) {
@@ -1274,7 +1286,7 @@ struct Fo4EntityRefresh::State {
             (category == 4 && options.corpse_inventories && within(e, options.actor_range)) ||
             (within(e, options.loot_range) &&
              ((category == 3 && options.loot_items) ||
-              (category == 2 && options.loot_inventories) ||
+              (category == 2 && (options.loot_inventories || options.loot_vendor_chests)) ||
               (category == 4 && options.loot_inventories) ||
               (category == 5 && options.harvest)));
     }
@@ -1529,7 +1541,13 @@ struct Fo4EntityRefresh::State {
             // The extra-data walk is bounded to 256 nodes by the helper.
             if (radar_wants(e, 1) && fo4hud_reference_has_loading_transition(address, world.cell)) e.radar_category = 1;
             if (!e.radar_category || !world_wants(e, e.radar_category)) return true;
-            if (radar_wants(e, e.radar_category))
+            if (e.radar_category == 2) {
+                if (const char* vendor = fo4hud_vendor_chest_name(address)) {
+                    e.vendor_chest = true;
+                    e.name = vendor;
+                }
+            }
+            if (!e.vendor_chest && radar_wants(e, e.radar_category))
                 e.name = fo4hud_is_cap_stash_form(info.type, info.id) ? "Cap stash" :
                          fo4hud_is_mirelurk_egg_form(info.type, info.id) ? "Mirelurk egg" : name(info.name_field);
         } else return true;
@@ -1562,7 +1580,11 @@ struct Fo4EntityRefresh::State {
                     header.get<uintptr_t, 0>() == probe.data && header.get<uint32_t, 0x10>() == probe.size;
             }
         }
-        if (!valid) result = Fo4InventoryState::Unknown;
+        // Vendor stock is largely leveled lists. A base-only probe cannot
+        // confirm emptiness with base entries until inventory is materialized.
+        // Zero base entries and no inventory do confirm an empty chest.
+        if (!valid || (probe.fallback && probe.entity.vendor_chest && probe.size))
+            result = Fo4InventoryState::Unknown;
         const bool near = within(probe.entity, std::max(1500.0f, options.loot_range));
         auto display_state = result;
         const auto previous = inventories.find(probe.entity.address);
@@ -2406,6 +2428,9 @@ Fo4TrapMarker inspect_trap_script(uintptr_t object) {
 // SHA-256 77d7efbb70dd1fa7bbe94db74707e24f5f1a3e681ec4972cfef371d512e446d3.
 // OnLoad/OnClose only play Open/Close animations based on whether it is empty.
 // It has no custom states, inventory mutations or quest effects.
+// Plain native ObjectReference bindings also occur on unscripted containers
+// (confirmed on Carla's vendor chest). Their base event handlers are empty;
+// accept only the exact ObjectReference -> Form -> ScriptObject hierarchy.
 bool loot_script_allows_auto_loot(uintptr_t object) {
     uint32_t flags = 0;
     uintptr_t type = 0;
@@ -2415,6 +2440,7 @@ bool loot_script_allows_auto_loot(uintptr_t object) {
     static constexpr ReviewedScript reviewed[] = {
         {"lockextralootscript", "donothing"},
         {"containeropenifempty", ""},
+        {"objectreference", ""},
     };
     const auto name = trap_lower(read_pooled_string(type + 0x10));
     const auto state = read_checked_pooled_string(object + 0x10);
@@ -2424,9 +2450,9 @@ bool loot_script_allows_auto_loot(uintptr_t object) {
         if (name == script.name && trap_lower(*state) == script.state) allowed = true;
     if (!allowed) return false;
     const char* hierarchy[] = {name.c_str(), "objectreference", "form", "scriptobject"};
-    for (const char* expected : hierarchy) {
+    for (size_t i = name == "objectreference" ? 1 : 0; i < 4; ++i) {
         uintptr_t parent = 0;
-        if (!type || trap_lower(read_pooled_string(type + 0x10)) != expected ||
+        if (!type || trap_lower(read_pooled_string(type + 0x10)) != hierarchy[i] ||
             !read_value(type + 0x18, parent) || parent == type) return false;
         type = parent;
     }
@@ -2668,4 +2694,10 @@ bool fo4hud_reference_scripts_allow_auto_loot(uintptr_t image, uintptr_t referen
 
 bool fo4hud_collection_alias_scripts_allow_auto_loot(uintptr_t image, uintptr_t alias) {
     return loot_bound_scripts_allow_auto_loot(image, alias, true);
+}
+
+const char* fo4hud_vendor_chest_name(uintptr_t reference) {
+    return fo4hud_vendor_chest_name(reference, [](uintptr_t address, auto& value) {
+        return read_value(address, value);
+    });
 }

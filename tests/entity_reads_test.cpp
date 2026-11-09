@@ -20,7 +20,47 @@ template <typename T> void put(void* storage, size_t offset, T value) {
     std::memcpy(static_cast<unsigned char*>(storage) + offset, &value, sizeof(value));
 }
 
+void check_native_loot_binding() {
+    // Live Carla chest 001679C7 exposes a plain ObjectReference binding,
+    // even though it has no custom container script in its plugin record.
+    std::array<unsigned char, 0x20> object{}, reference_type{}, form_type{}, root_type{}, custom_type{};
+    std::array<unsigned char, 0x60> reference_name{}, form_name{}, root_name{}, custom_name{}, state{};
+    auto string = [](auto& text, const char* name) {
+        put(text.data(), 0x10, uint32_t(std::strlen(name)));
+        std::strcpy(reinterpret_cast<char*>(text.data()+0x18), name);
+    };
+    auto type = [&](auto& node, auto& text, const char* name, uintptr_t parent) {
+        string(text, name);
+        put(node.data(), 0x10, uintptr_t(text.data()));
+        put(node.data(), 0x18, parent);
+    };
+    type(root_type, root_name, "ScriptObject", 0);
+    type(form_type, form_name, "Form", uintptr_t(root_type.data()));
+    type(reference_type, reference_name, "ObjectReference", uintptr_t(form_type.data()));
+    put(object.data(), 0, uint32_t(1));
+    put(object.data(), 8, uintptr_t(reference_type.data()));
+    assert(loot_script_allows_auto_loot(uintptr_t(object.data())));
+    // Only the exact native hierarchy and empty state qualify.
+    string(state, "CustomState");
+    put(object.data(), 0x10, uintptr_t(state.data()));
+    assert(!loot_script_allows_auto_loot(uintptr_t(object.data())));
+    put(object.data(), 0x10, uintptr_t(0));
+    type(custom_type, custom_name, "UnreviewedContainer", uintptr_t(reference_type.data()));
+    put(object.data(), 8, uintptr_t(custom_type.data()));
+    assert(!loot_script_allows_auto_loot(uintptr_t(object.data())));
+    // A safe native binding cannot approve an unsafe sibling binding.
+    LootScriptVisitor visitor{nullptr};
+    uintptr_t binding = uintptr_t(object.data());
+    visit_loot_script(&visitor, &binding);
+    put(object.data(), 8, uintptr_t(reference_type.data()));
+    visit_loot_script(&visitor, &binding);
+    assert(!visitor.clear && visitor.count == 2);
+    put(form_type.data(), 0x18, uintptr_t(reference_type.data()));
+    assert(!loot_script_allows_auto_loot(uintptr_t(object.data())));
+}
+
 int main() {
+    check_native_loot_binding();
     const size_t page_size = sysconf(_SC_PAGESIZE);
     auto* pages = static_cast<unsigned char*>(mmap(nullptr, page_size * 2,
         PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));

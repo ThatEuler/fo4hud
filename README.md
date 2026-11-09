@@ -73,6 +73,25 @@ The next game launch restores these preferences, including cheat toggles.
 Perk points, caps, carry weight, speed, and jump/fall values are read from the
 current game; their dialogs do not overwrite another save on startup.
 
+The cheat tab's **Loot vendor chests (including locked)** toggle transfers
+playable vendor stock within the auto loot range, independently of the normal
+auto loot, inventory, theft, and category toggles. It bypasses chest locks and
+ownership without unlocking or activating the chest. Transfers run every player
+update when queued, with up to 128 object types per 4 ms batch; large quantities
+transfer together. Identity, range, menu state, scripts, and quest-linked stacks
+are checked during transfers. The toggle defaults off and is saved with the
+other preferences.
+
+Vendor markers show the vendor chest name only in the hover tooltip,
+including script-created settlement stock containers. Recognition
+checks plugin namespaces and stock base IDs, including DLC/light plugins and
+winning overrides. `vendor_chest_records.h` contains the generated identities
+and names from installed FACT.VENC, REFR.NAME, and vendor CONT records. After
+changing plugins, regenerate with `make prepare-vendor-chests` (or run
+`python3 tools/extract_vendor_chests.py --data /path/to/Data --language en`),
+then rebuild and restart the game.
+
+
 For Steam's Fallout 4 launch options:
 
 ```sh

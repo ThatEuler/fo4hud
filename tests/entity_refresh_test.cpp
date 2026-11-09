@@ -454,4 +454,54 @@ int main() {
     options.trap_range = 0; traps.update(options, std::chrono::microseconds(0), now);
     assert(traps.snapshot().trap_candidates.empty());
 
+    // An uninitialized vendor chest with zero base entries is truly empty.
+    // It must publish Empty (grey), rather than the Unknown (yellow) fallback.
+    std::array<unsigned char, 0x380> plugin{};
+    std::array<unsigned char, 0x10> source_files{}, plugin_files{};
+    std::strcpy(reinterpret_cast<char*>(plugin.data()+0x70), "Fallout4.esm");
+    put(source_files.data(), 0, address(plugin_files));
+    put(source_files.data(), 8, uint32_t(1));
+    put(plugin_files.data(), 0, address(plugin));
+    put(bases[0].data(), 8, address(source_files));
+    put(bases[0].data(), 0x14, uint32_t(0x1F2676)); // VendorAspiration
+    put(bases[0].data(), 0x1A, uint8_t(31));
+    put(bases[0].data(), 0x78, uint32_t(0));
+    put(f.refs[0].data(), 0xF8, uintptr_t(0));
+    Fo4Entity vendor;
+    vendor.address = address(f.refs[0]); vendor.form_type = 64;
+    classify_radar_reference(vendor);
+    assert(vendor.vendor_chest && vendor.inventory_state == Fo4InventoryState::Empty);
+    auto vendor_state = [&](Fo4EntityRefresh& scan) {
+        for (const auto& e : scan.snapshot().entities)
+            if (e.address == address(f.refs[0])) {
+                assert(e.vendor_chest);
+                return e.inventory_state;
+            }
+        return Fo4InventoryState::Unknown;
+    };
+    options = {}; options.radar_categories = 1 << 2; options.radar_range = 1000;
+    Fo4EntityRefresh empty_vendor;
+    for (int frame=0; frame<1000 && !empty_vendor.stats().inventory_probes; ++frame) {
+        empty_vendor.update(options, std::chrono::microseconds(1500), now);
+        now += std::chrono::milliseconds(16);
+    }
+    assert(empty_vendor.stats().inventory_probes);
+    assert(vendor_state(empty_vendor) == Fo4InventoryState::Empty);
+    // Pending leveled stock still stays Unknown so auto loot can initialize it.
+    std::array<unsigned char, 0x20> leveled{}, entry{};
+    uintptr_t vendor_entries[] = {address(entry)};
+    put(leveled.data(), 0x1A, uint8_t(56));
+    put(entry.data(), 0, int32_t(1)); put(entry.data(), 8, address(leveled));
+    put(bases[0].data(), 0x70, reinterpret_cast<uintptr_t>(vendor_entries));
+    put(bases[0].data(), 0x78, uint32_t(1));
+    classify_radar_reference(vendor);
+    assert(vendor.inventory_state == Fo4InventoryState::Unknown);
+    Fo4EntityRefresh pending_vendor;
+    for (int frame=0; frame<1000 && !pending_vendor.stats().inventory_probes; ++frame) {
+        pending_vendor.update(options, std::chrono::microseconds(1500), now);
+        now += std::chrono::milliseconds(16);
+    }
+    assert(pending_vendor.stats().inventory_probes);
+    assert(vendor_state(pending_vendor) == Fo4InventoryState::Unknown);
+
 }

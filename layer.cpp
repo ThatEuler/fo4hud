@@ -621,6 +621,8 @@ void draw_radar_tab(Swapchain& sc, const Fo4EntitySnapshot& snapshot, OverlaySet
             hovered->display_inventory_state() == Fo4InventoryState::Empty)
             ImGui::TextUnformatted("Inventory empty");
         if (hovered_loot) {
+            if (hovered->vendor_chest && settings.loot_vendor_chests)
+                ImGui::TextUnformatted("Vendor chest looting enabled (locks bypassed)");
             if (const char* reason = fo4hud_combat_manual_loot_reason(*hovered))
                 ImGui::Text("Manual pickup: %s", reason);
             if (hovered_access == Fo4LootAccess::Stealing)
@@ -737,6 +739,7 @@ bool draw_overlay(Swapchain& sc, VkQueue queue, uint32_t family,
         fo4hud_combat_set_auto_loot_categories(fo4hud_loot_category_mask(overlay_settings));
         fo4hud_combat_set_auto_loot_inventories(overlay_settings.auto_loot_inventories);
         fo4hud_combat_set_auto_loot_steal(overlay_settings.auto_loot_steal);
+        if (overlay_settings.loot_vendor_chests) fo4hud_combat_set_loot_vendor_chests(true);
         if (overlay_settings.auto_loot) fo4hud_combat_set_auto_loot(true);
         if (overlay_settings.auto_harvest) fo4hud_combat_set_auto_harvest(true);
     }
@@ -750,6 +753,8 @@ bool draw_overlay(Swapchain& sc, VkQueue queue, uint32_t family,
             fo4hud_combat_set_unlimited_action_points(overlay_settings.unlimited_action_points);
         if (fo4hud_combat_no_recoil() != overlay_settings.no_recoil)
             fo4hud_combat_set_no_recoil(overlay_settings.no_recoil);
+        if (fo4hud_combat_loot_vendor_chests() != overlay_settings.loot_vendor_chests)
+            fo4hud_combat_set_loot_vendor_chests(overlay_settings.loot_vendor_chests);
         if (fo4hud_combat_auto_loot() != overlay_settings.auto_loot)
             fo4hud_combat_set_auto_loot(overlay_settings.auto_loot);
         if (fo4hud_combat_auto_harvest() != overlay_settings.auto_harvest)
@@ -801,6 +806,7 @@ bool draw_overlay(Swapchain& sc, VkQueue queue, uint32_t family,
     scan_options.loot_items = overlay_settings.auto_loot;
     scan_options.loot_inventories = overlay_settings.auto_loot && overlay_settings.auto_loot_inventories;
     scan_options.harvest = overlay_settings.auto_harvest;
+    scan_options.loot_vendor_chests = overlay_settings.loot_vendor_chests;
     scan_options.trap_range = overlay_settings.trap_warnings ? overlay_settings.trap_warning_range : 0;
     if (entity_refresh.update(scan_options)) {
         last_snapshot = now;
@@ -816,10 +822,11 @@ bool draw_overlay(Swapchain& sc, VkQueue queue, uint32_t family,
     static auto last_auto_loot_queue = std::chrono::steady_clock::time_point{};
     static size_t auto_loot_cursor = 0;
     if (((overlay_settings.auto_loot && fo4hud_combat_auto_loot()) ||
-         (overlay_settings.auto_harvest && fo4hud_combat_auto_harvest())) &&
+         (overlay_settings.auto_harvest && fo4hud_combat_auto_harvest()) ||
+         (overlay_settings.loot_vendor_chests && fo4hud_combat_loot_vendor_chests())) &&
         !game_menu_cursor_active && entities.status == "Ready" &&
         fo4hud_player_in_snapshot_cell(entities) &&
-        now - last_auto_loot_queue >= kFo4AutoLootInterval) {
+        (overlay_settings.loot_vendor_chests || now - last_auto_loot_queue >= kFo4AutoLootInterval)) {
         last_auto_loot_queue = now;
         float player[3]{};
         if (fo4hud_read_player_position(entities, player)) {
@@ -836,9 +843,9 @@ bool draw_overlay(Swapchain& sc, VkQueue queue, uint32_t family,
                     entities.actors[index - world_count];
                 if (!item.cell_address) continue;
                 const bool loose = overlay_settings.auto_loot && item.radar_category == 3;
+                const bool vendor = item.vendor_chest && overlay_settings.loot_vendor_chests;
                 const bool container = item.radar_category == 2 &&
-                    overlay_settings.auto_loot &&
-                    overlay_settings.auto_loot_inventories &&
+                    (vendor || (overlay_settings.auto_loot && overlay_settings.auto_loot_inventories)) &&
                     item.inventory_state != Fo4InventoryState::Empty;
                 const bool corpse = item.radar_category == 4 &&
                     overlay_settings.auto_loot &&
@@ -975,6 +982,12 @@ bool draw_overlay(Swapchain& sc, VkQueue queue, uint32_t family,
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("cheat")) {
+            if (ImGui::Checkbox("Loot vendor chests (including locked)", &overlay_settings.loot_vendor_chests)) {
+                fo4hud_combat_set_loot_vendor_chests(overlay_settings.loot_vendor_chests);
+                settings_changed_this_frame = true;
+            }
+            ImGui::TextWrapped("Transfers all playable vendor stock within the auto loot range, including owned stock. Independent of auto loot and its category filters.");
+            ImGui::Separator();
             settings_changed_this_frame |= ImGui::Checkbox("Shot redirect (hold right mouse button)", &aim_assist);
             settings_changed_this_frame |= ImGui::SliderFloat("Aim radius", &aim_radius, 40.0f, 500.0f, "%.0f px");
             settings_changed_this_frame |= ImGui::SliderFloat("Aim distance", &aim_distance,

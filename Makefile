@@ -24,6 +24,7 @@ settings.o: settings.h
 game_entities.o game_control.o game_combat.o game_workshop.o radar_map.o: game_entities.h
 radar_map.o game_entities.o: radar_map.h
 game_entities.o game_combat.o: loot_categories.h loot_playability.h
+game_entities.o: vendor_chests.h vendor_chest_records.h
 layer.o game_combat.o: loot_safety.h
 layer.o game_combat.o: game_combat.h
 game_control.o control_memory.o: control_json.h control_memory.h game_control.h
@@ -196,3 +197,12 @@ test-loot-safety: tests/loot_safety_test.cpp loot_safety.h game_entities.o
 	/tmp/fo4hud-loot-safety-test
 
 .PHONY: test-loot-safety
+
+prepare-vendor-chests:
+	python3 tools/extract_vendor_chests.py
+
+test-vendor-chests: tests/vendor_chests_test.cpp vendor_chests.h vendor_chest_records.h loot_safety.h
+	$(CXX) $(CXXFLAGS) -o /tmp/fo4hud-vendor-chests-test tests/vendor_chests_test.cpp
+	/tmp/fo4hud-vendor-chests-test
+
+.PHONY: prepare-vendor-chests test-vendor-chests

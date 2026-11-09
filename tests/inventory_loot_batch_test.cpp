@@ -16,7 +16,7 @@ struct Entry { uintptr_t object, stack; };
 std::vector<Entry> live;
 uintptr_t refused = 0;
 int calls = 0;
-bool scripts_safe = true, change_scripts = false;
+bool scripts_safe = true, change_scripts = false, revoke_vendor = false;
 bool change_cell = false, revoke_stealing = false, slow_transfer = false, bind_quest = false;
 std::array<unsigned char, 0x20> extras{};
 std::array<unsigned char, 0x38> alias_node{};
@@ -26,7 +26,8 @@ void publish() {
     put(inventory, 0x68, uint32_t(live.size()));
 }
 void reset() {
-    scripts_safe = true; change_scripts = false;
+    scripts_safe = true; change_scripts = false; revoke_vendor = false;
+    loot_vendor_chests = false;
     calls = 0; change_cell = revoke_stealing = slow_transfer = bind_quest = false;
     put(source, 0x100, uintptr_t(0));
     inventory_loot_cursors.clear();
@@ -62,6 +63,7 @@ void __attribute__((ms_abi)) remove_item(void* actor, uint32_t*, void* raw) {
     if (slow_transfer) usleep(3000);
     if (bind_quest) put(source, 0x100, address(extras));
     if (change_scripts) scripts_safe = false;
+    if (revoke_vendor) loot_vendor_chests = false;
 }
 }
 
@@ -131,6 +133,41 @@ int main() {
     assert(calls == 0);
     // Category selection continues to apply to every item in a batch.
     auto_loot_categories = Fo4LootWeapons; loot(); assert(calls == 0);
+    // Vendor-only looting works with every regular auto-loot option off and
+    // category filters empty, and bypasses the chest lock without changing it.
+    std::array<unsigned char, 0x380> plugin{};
+    std::array<unsigned char, 0x10> source_files{}, plugin_files{};
+    std::strcpy(reinterpret_cast<char*>(plugin.data()+0x70), "Fallout4.esm");
+    put(source_files, 0, address(plugin_files)); put(source_files, 8, uint32_t(1));
+    put(plugin_files, 0, address(plugin));
+    put(source, 8, address(source_files)); put(base, 8, address(source_files));
+    put(source, 0x14, uint32_t(0x1679C7)); put(source, 0x1A, uint8_t(64));
+    put(base, 0x14, uint32_t(0x1679C6)); put(base, 0x1A, uint8_t(0x1F));
+    auto vendor_loot = [&] { loot_inventory_on_game_thread(image, address(source), address(base), 0x1F,
+        address(player), 0x1679C7, false, [](uintptr_t, uintptr_t) { return scripts_safe; }, true); };
+    auto reset_vendor = [&] {
+        reset(); loot_vendor_chests = true;
+        auto_loot = auto_loot_inventories = auto_loot_steal = false;
+        auto_loot_categories = 0;
+        put(alias_node, 0x12, uint8_t(0x2A)); put(source, 0x100, address(extras));
+    };
+    reset_vendor(); vendor_loot(); assert(calls > 1);
+    for (int pass=0; pass<30 && !live.empty(); ++pass) vendor_loot();
+    assert(live.empty());
+    uint8_t lock_type = 0; assert(read_value(address(alias_node)+0x12, lock_type) && lock_type == 0x2A);
+    reset_vendor(); revoke_vendor = true; vendor_loot(); assert(calls == 1);
+    reset_vendor(); change_cell = true; vendor_loot(); assert(calls == 1);
+    reset_vendor(); change_scripts = true; vendor_loot(); assert(calls == 1);
+    reset_vendor(); put(alias_node, 0x12, uint8_t(0x88)); vendor_loot(); assert(calls == 0);
+    reset_vendor(); loot_vendor_chests = false; vendor_loot(); assert(calls == 0);
+    reset_vendor(); put(base, 0x14, uint32_t(0x123)); vendor_loot(); assert(calls == 0);
+    put(base, 0x14, uint32_t(0x1679C6));
+    // Vendor transfers take whole quantities, rather than the normal 1000 cap.
+    reset_vendor(); put(stacks[0], 0x20, uint32_t(5000));
+    uintptr_t vendor_object = 0; int32_t vendor_count = 0;
+    assert(first_inventory_stack(address(source), true, vendor_object, vendor_count, nullptr,
+        LootClock::time_point::max(), nullptr, true));
+    assert(vendor_count == 5000);
     munmap(memory, kImageSize);
     std::filesystem::remove_all(directory);
 }

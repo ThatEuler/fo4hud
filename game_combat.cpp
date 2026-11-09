@@ -137,6 +137,7 @@ std::atomic<bool> invulnerable{false};
 std::atomic<bool> unlimited_action_points{false};
 std::atomic<bool> no_recoil{false};
 std::atomic<bool> auto_loot{false};
+std::atomic<bool> loot_vendor_chests{false};
 std::atomic<bool> auto_harvest{false};
 std::atomic<bool> auto_loot_inventories{false};
 std::atomic<bool> auto_loot_steal{false};
@@ -1086,10 +1087,10 @@ bool loot_alias_scripts_clear(uintptr_t alias) {
     return fo4hud_collection_alias_scripts_allow_auto_loot(image_base, alias);
 }
 
-const char* loot_reference_reason(uintptr_t reference, bool inspect_scripts = true) {
+const char* loot_reference_reason(uintptr_t reference, bool inspect_scripts = true, bool allow_locks = false) {
     return fo4hud_loot_reference_reason(reference, [](uintptr_t address, auto& value) {
         return read_value(address, value);
-    }, inspect_scripts ? loot_alias_scripts_clear : nullptr);
+    }, inspect_scripts ? loot_alias_scripts_clear : nullptr, allow_locks);
 }
 
 bool reference_no_crime(uintptr_t reference, bool& no_crime) {
@@ -1167,7 +1168,9 @@ void check_loot_access_on_game_thread(void* player,
             read_value(c.reference + 0xB8, cell) && cell == c.cell;
         if (live && check(image_base, reinterpret_cast<uintptr_t>(player), c.reference, stealing))
             access = stealing ? Fo4LootAccess::Stealing : Fo4LootAccess::Allowed;
-        const char* reason = loot_reference_reason(c.reference);
+        const bool vendor = live && loot_vendor_chests.load(std::memory_order_acquire) &&
+            fo4hud_vendor_chest_name(c.reference);
+        const char* reason = loot_reference_reason(c.reference, true, vendor);
         uintptr_t base = 0;
         uint8_t base_type = 0;
         if (live && !reason && read_value(c.reference + 0xE0, base) &&
@@ -1190,13 +1193,15 @@ void check_loot_access_on_game_thread(void* player,
 using LootClock = std::chrono::steady_clock;
 constexpr size_t kInventoryLootBatchSize = 8;
 constexpr auto kInventoryLootBudget = std::chrono::milliseconds(2);
+constexpr size_t kVendorInventoryLootBatchSize = 128;
+constexpr auto kVendorInventoryLootBudget = std::chrono::milliseconds(4);
 struct InventoryLootCursor { uint32_t form_id; size_t next; };
 std::unordered_map<uintptr_t, InventoryLootCursor> inventory_loot_cursors;
 
 bool first_inventory_stack(uintptr_t source, bool allow_stealing,
                            uintptr_t& object, int32_t& count, size_t* cursor = nullptr,
                            LootClock::time_point deadline = LootClock::time_point::max(),
-                           const std::unordered_set<uintptr_t>* attempted = nullptr) {
+                           const std::unordered_set<uintptr_t>* attempted = nullptr, bool vendor = false) {
     uintptr_t inventory = 0, data = 0;
     uint32_t capacity = 0, size = 0;
     if (!read_value(source + 0xF8, inventory) || !inventory ||
@@ -1214,7 +1219,7 @@ bool first_inventory_stack(uintptr_t source, bool allow_stealing,
         if (cursor) *cursor = (index + 1) % entries.size();
         const auto& entry = entries[index];
         if (!entry.object || (attempted && attempted->count(entry.object)) ||
-            !loot_category_enabled(entry.object)) continue;
+            !(vendor ? loot_category_for_object(entry.object) : loot_category_enabled(entry.object))) continue;
         uint8_t type = 0;
         if (!read_value(entry.object + 0x1A, type)) return false;
         uintptr_t stack = entry.stack;
@@ -1234,7 +1239,9 @@ bool first_inventory_stack(uintptr_t source, bool allow_stealing,
                 unsafe_object = true;
             if (type == 0x2B && !loot_weapon_extra_playable(extra))
                 unsafe_object = true;
-            if (stack_count && !safe_count)
+            if (vendor)
+                safe_count = static_cast<int32_t>(std::min<int64_t>(int64_t(safe_count) + stack_count, INT32_MAX));
+            else if (stack_count && !safe_count)
                 safe_count = static_cast<int32_t>(std::min(stack_count, uint32_t(1000)));
             stack = next;
         }
@@ -1256,8 +1263,10 @@ void loot_inventory_on_game_thread(uintptr_t image, uintptr_t source,
                                    uintptr_t base, uint8_t base_type,
                                    uintptr_t player, uint32_t source_form_id,
                                    bool allow_stealing,
-                                   bool (*scripts_clear)(uintptr_t, uintptr_t) = fo4hud_reference_scripts_allow_auto_loot) {
-    if (loot_reference_reason(source) ||
+                                   bool (*scripts_clear)(uintptr_t, uintptr_t) = fo4hud_reference_scripts_allow_auto_loot,
+                                   bool vendor = false) {
+    vendor = vendor && loot_vendor_chests.load(std::memory_order_acquire) && fo4hud_vendor_chest_name(source);
+    if (loot_reference_reason(source, true, vendor) ||
         (base_type == 0x1F && !scripts_clear(image, source))) return;
     uintptr_t source_vtable = 0, remove = 0, inventory = 0;
     if (!read_value(source, source_vtable) ||
@@ -1283,18 +1292,18 @@ void loot_inventory_on_game_thread(uintptr_t image, uintptr_t source,
         inventory_loot_cursors.clear();
     auto& cursor = inventory_loot_cursors[source];
     if (cursor.form_id != source_form_id) cursor = {source_form_id, 0};
-    const auto deadline = LootClock::now() + kInventoryLootBudget;
+    const auto deadline = LootClock::now() + (vendor ? kVendorInventoryLootBudget : kInventoryLootBudget);
     std::unordered_set<uintptr_t> attempted;
-    for (size_t i = 0; i < kInventoryLootBatchSize && LootClock::now() < deadline; ++i) {
+    for (size_t i = 0; i < (vendor ? kVendorInventoryLootBatchSize : kInventoryLootBatchSize) && LootClock::now() < deadline; ++i) {
         // RemoveItem may invoke scripts. Recheck identity, range and permission
         // after each transfer, and never retain inventory/stack pointers across it.
         uint32_t id = 0, flags = 0, state = 0;
         uintptr_t live_base = 0, cell = 0, live_player_cell = 0;
         float source_position[3]{}, player_position[3]{};
-        if (!auto_loot.load(std::memory_order_acquire) ||
-            !auto_loot_inventories.load(std::memory_order_acquire) ||
+        if ((vendor ? !loot_vendor_chests.load(std::memory_order_acquire) || !fo4hud_vendor_chest_name(source) :
+             !auto_loot.load(std::memory_order_acquire) || !auto_loot_inventories.load(std::memory_order_acquire)) ||
             fo4hud_game_menu_cursor_active() ||
-            loot_reference_reason(source) ||
+            loot_reference_reason(source, true, vendor) ||
             !read_value(source + 0x14, id) || id != source_form_id ||
             !read_value(source + 0xE0, live_base) || live_base != base ||
             !read_value(source + 0x10, flags) || (flags & ((1u << 5) | (1u << 11))) ||
@@ -1313,12 +1322,12 @@ void loot_inventory_on_game_thread(uintptr_t image, uintptr_t source,
         const float range = auto_loot_range.load(std::memory_order_acquire);
         if (!std::isfinite(distance_squared) || distance_squared > range * range) break;
         // A setting change can revoke permission even partway through a batch.
-        const bool steal = allow_stealing && auto_loot_steal.load(std::memory_order_acquire);
+        const bool steal = vendor || (allow_stealing && auto_loot_steal.load(std::memory_order_acquire));
         bool would_steal = false;
         if (!steal && (!reference_would_be_stealing(image, player, source, would_steal) || would_steal)) break;
         uintptr_t object = 0;
         int32_t count = 0;
-        if (!first_inventory_stack(source, steal, object, count, &cursor.next, deadline, &attempted)) break;
+        if (!first_inventory_stack(source, steal, object, count, &cursor.next, deadline, &attempted, vendor)) break;
         attempted.insert(object); // A refused transfer must not block the remaining objects.
         if (LootClock::now() >= deadline) break;
         alignas(8) unsigned char remove_data[0x48]{};
@@ -1331,7 +1340,7 @@ void loot_inventory_on_game_thread(uintptr_t image, uintptr_t source,
         reinterpret_cast<RemoveItemFn>(remove)(reinterpret_cast<void*>(source),
                                                 &result_handle, remove_data);
     }
-    if (!attempted.empty()) log_event("auto_loot_inventory_batch", source_form_id);
+    if (!attempted.empty()) log_event(vendor ? "vendor_chest_loot_batch" : "auto_loot_inventory_batch", source_form_id);
 
 }
 
@@ -1398,20 +1407,23 @@ void auto_loot_on_game_thread(void* actor) {
     static thread_local bool in_pickup = false;
     if (in_pickup) return;
     if ((!auto_loot.load(std::memory_order_acquire) &&
-         !auto_harvest.load(std::memory_order_acquire)) ||
+         !auto_harvest.load(std::memory_order_acquire) &&
+         !loot_vendor_chests.load(std::memory_order_acquire)) ||
         fo4hud_game_menu_cursor_active()) return;
     static auto last_attempt = std::chrono::steady_clock::time_point{};
     static uintptr_t last_reference = 0;
     const auto now = std::chrono::steady_clock::now();
-    if (now - last_attempt < kFo4AutoLootInterval) return;
     AutoLootCandidate candidate;
     {
         std::lock_guard<std::mutex> lock(auto_loot_mutex);
         candidate = pending_auto_loot;
+        const bool vendor_pending = candidate.category == 2 && loot_vendor_chests.load(std::memory_order_acquire) && fo4hud_vendor_chest_name(candidate.address);
+        if (!vendor_pending && now - last_attempt < kFo4AutoLootInterval) return;
         pending_auto_loot = {};
     }
-    const auto repeat_interval = candidate.category == 2 || candidate.category == 4 ?
-        kFo4AutoLootInterval : kFo4AutoLootRepeatInterval;
+    const bool vendor = candidate.category == 2 && loot_vendor_chests.load(std::memory_order_acquire) && fo4hud_vendor_chest_name(candidate.address);
+    const auto repeat_interval = vendor ? std::chrono::milliseconds(0) :
+        (candidate.category == 2 || candidate.category == 4 ? kFo4AutoLootInterval : kFo4AutoLootRepeatInterval);
     if (!candidate.address ||
         (candidate.address == last_reference && now - last_attempt < repeat_interval)) return;
     last_attempt = now;
@@ -1423,7 +1435,7 @@ void auto_loot_on_game_thread(void* actor) {
     uint8_t type = 0, base_type = 0;
     uintptr_t base = 0, item_cell = 0;
     float player_position[3]{}, item_position[3]{};
-    const bool allow_stealing = auto_loot_steal.load(std::memory_order_acquire);
+    const bool allow_stealing = vendor || auto_loot_steal.load(std::memory_order_acquire);
     if (!read_player(image, player) || actor != reinterpret_cast<void*>(player) ||
         !read_value(player, vtable) || vtable != image + kPlayerVtableRva ||
         !read_value(player + 0x130, player_state) ||
@@ -1441,7 +1453,7 @@ void auto_loot_on_game_thread(void* actor) {
         !read_memory(player + 0xD0, player_position, sizeof(player_position)) ||
         !read_memory(candidate.address + 0xD0, item_position, sizeof(item_position))) return;
 
-    if (loot_reference_reason(candidate.address)) return;
+    if (loot_reference_reason(candidate.address, true, vendor)) return;
 
     if (candidate.category == 5) {
         uintptr_t produce = 0;
@@ -1456,12 +1468,12 @@ void auto_loot_on_game_thread(void* actor) {
             (!read_value(candidate.address + 0x100, extra) ||
              !loot_weapon_extra_playable(extra))) return;
     } else {
-        if (!auto_loot.load(std::memory_order_acquire) ||
-            !auto_loot_inventories.load(std::memory_order_acquire) ||
+        if ((!vendor && (!auto_loot.load(std::memory_order_acquire) ||
+            !auto_loot_inventories.load(std::memory_order_acquire))) ||
             (candidate.category == 2 && base_type != 0x1F) ||
             (candidate.category == 4 && base_type != 45) ||
             (candidate.category != 2 && candidate.category != 4)) return;
-        if (candidate.category == 2 && !fo4hud_container_auto_loot_safe(base))
+        if (candidate.category == 2 && !vendor && !fo4hud_container_auto_loot_safe(base))
             return;
         if (candidate.category == 4) {
             uint32_t state_word = 0;
@@ -1511,7 +1523,7 @@ void auto_loot_on_game_thread(void* actor) {
         }
     } else {
         loot_inventory_on_game_thread(image, candidate.address, base, base_type,
-                                      player, form_id, allow_stealing);
+                                      player, form_id, allow_stealing, fo4hud_reference_scripts_allow_auto_loot, vendor);
     }
     in_pickup = false;
 }
@@ -1725,7 +1737,8 @@ const char* fo4hud_combat_manual_loot_reason(const Fo4Entity& item) {
         it->second.cell == item.cell_address &&
         std::chrono::steady_clock::now() - it->second.checked < std::chrono::seconds(1))
         return it->second.manual_reason;
-    return loot_reference_reason(item.address, false);
+    const bool vendor = loot_vendor_chests.load(std::memory_order_acquire) && fo4hud_vendor_chest_name(item.address);
+    return loot_reference_reason(item.address, false, vendor);
 }
 
 void fo4hud_combat_queue_hostility(const std::vector<Fo4HostilityCandidate>& candidates) {
@@ -1855,6 +1868,7 @@ void fo4hud_combat_uninstall() {
     unlimited_action_points.store(false, std::memory_order_release);
     no_recoil.store(false, std::memory_order_release);
     auto_loot.store(false, std::memory_order_release);
+    loot_vendor_chests.store(false, std::memory_order_release);
     auto_harvest.store(false, std::memory_order_release);
     auto_loot_steal.store(false, std::memory_order_release);
     {
@@ -1942,12 +1956,18 @@ void fo4hud_combat_set_no_recoil(bool value) {
     no_recoil.store(value && fo4hud_combat_active(), std::memory_order_release);
     log_event(value ? "no_recoil_enabled" : "no_recoil_disabled");
 }
+bool fo4hud_combat_loot_vendor_chests() { return loot_vendor_chests.load(std::memory_order_acquire); }
+void fo4hud_combat_set_loot_vendor_chests(bool value) {
+    if (value && !fo4hud_combat_active()) fo4hud_combat_install();
+    loot_vendor_chests.store(value && fo4hud_combat_active(), std::memory_order_release);
+    log_event(value ? "vendor_chest_loot_enabled" : "vendor_chest_loot_disabled");
+}
 bool fo4hud_combat_auto_loot() { return auto_loot.load(std::memory_order_acquire); }
 bool fo4hud_combat_auto_harvest() { return auto_harvest.load(std::memory_order_acquire); }
 void fo4hud_combat_set_auto_loot(bool value) {
     if (value && !fo4hud_combat_active()) fo4hud_combat_install();
     auto_loot.store(value && fo4hud_combat_active(), std::memory_order_release);
-    if (!value && !auto_harvest.load(std::memory_order_acquire)) {
+    if (!value && !auto_harvest.load(std::memory_order_acquire) && !loot_vendor_chests.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lock(auto_loot_mutex);
         pending_auto_loot = {};
     }
@@ -1956,7 +1976,7 @@ void fo4hud_combat_set_auto_loot(bool value) {
 void fo4hud_combat_set_auto_harvest(bool value) {
     if (value && !fo4hud_combat_active()) fo4hud_combat_install();
     auto_harvest.store(value && fo4hud_combat_active(), std::memory_order_release);
-    if (!value && !auto_loot.load(std::memory_order_acquire)) {
+    if (!value && !auto_loot.load(std::memory_order_acquire) && !loot_vendor_chests.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lock(auto_loot_mutex);
         pending_auto_loot = {};
     }
@@ -1984,7 +2004,9 @@ bool fo4hud_combat_queue_auto_loot(const Fo4Entity& item) {
         (item.radar_category == 3 ||
          (auto_loot_inventories.load(std::memory_order_acquire) &&
           (item.radar_category == 2 || item.radar_category == 4)));
-    if ((!harvest && !loot) ||
+    const bool vendor = item.radar_category == 2 && loot_vendor_chests.load(std::memory_order_acquire) &&
+        fo4hud_vendor_chest_name(item.address);
+    if ((!harvest && !loot && !vendor) ||
         !item.address || !item.cell_address) return false;
     std::lock_guard<std::mutex> lock(auto_loot_mutex);
     if (pending_auto_loot.address) return false;

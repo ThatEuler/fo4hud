@@ -44,6 +44,8 @@ int main() {
     chosen.invulnerable = true;
     chosen.unlimited_action_points = true;
     chosen.no_recoil = true;
+    assert(!chosen.loot_vendor_chests);
+    chosen.loot_vendor_chests = true;
     chosen.auto_loot = true;
     chosen.auto_loot_inventories = true;
     chosen.auto_harvest = true;
@@ -90,6 +92,7 @@ int main() {
            loaded.aim_distance == 12345.0f);
     assert(loaded.instant_kill && loaded.invulnerable &&
            loaded.unlimited_action_points && loaded.no_recoil);
+    assert(loaded.loot_vendor_chests);
     assert(loaded.auto_loot && loaded.auto_loot_inventories && loaded.auto_harvest &&
            loaded.auto_loot_steal &&
            loaded.auto_loot_range == 425.0f);

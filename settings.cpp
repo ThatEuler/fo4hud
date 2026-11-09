@@ -111,6 +111,7 @@ bool fo4hud_load_settings(OverlaySettings& settings, std::string& error) {
         else if (key == "invulnerable") read_bool(value, settings.invulnerable);
         else if (key == "unlimited_action_points") read_bool(value, settings.unlimited_action_points);
         else if (key == "no_recoil") read_bool(value, settings.no_recoil);
+        else if (key == "loot_vendor_chests") read_bool(value, settings.loot_vendor_chests);
         else if (key == "auto_loot") read_bool(value, settings.auto_loot);
         else if (key == "auto_loot_inventories") read_bool(value, settings.auto_loot_inventories);
         else if (key == "auto_harvest") read_bool(value, settings.auto_harvest);
@@ -174,7 +175,7 @@ bool fo4hud_save_settings(const OverlaySettings& settings, std::string& error) {
         "label_radius=%.9g\nlabel_limit=%d\nname_filter=%s\n"
         "aim_assist=%d\naim_radius=%.9g\naim_distance=%.9g\n"
         "instant_kill=%d\ninvulnerable=%d\nunlimited_action_points=%d\nno_recoil=%d\n"
-        "quest_loot_defaults=1\nauto_loot=%d\nauto_loot_inventories=%d\nauto_harvest=%d\nauto_loot_steal=%d\nauto_loot_range=%.9g\n"
+        "quest_loot_defaults=1\nloot_vendor_chests=%d\nauto_loot=%d\nauto_loot_inventories=%d\nauto_harvest=%d\nauto_loot_steal=%d\nauto_loot_range=%.9g\n"
         "loot_junk=%d\nloot_weapons=%d\nloot_apparel=%d\nloot_aid=%d\nloot_ammo=%d\n"
         "loot_books=%d\nloot_ingredients=%d\nloot_keys=%d\nloot_notes=%d\nloot_other_misc=%d\n"
         "radar_map_background=%d\nradar_map_opacity=%.9g\n"
@@ -189,7 +190,7 @@ bool fo4hud_save_settings(const OverlaySettings& settings, std::string& error) {
         settings.aim_assist, settings.aim_radius, settings.aim_distance,
         settings.instant_kill, settings.invulnerable,
         settings.unlimited_action_points, settings.no_recoil,
-        settings.auto_loot, settings.auto_loot_inventories, settings.auto_harvest,
+        settings.loot_vendor_chests, settings.auto_loot, settings.auto_loot_inventories, settings.auto_harvest,
         settings.auto_loot_steal,
         settings.auto_loot_range,
         settings.loot_junk, settings.loot_weapons, settings.loot_apparel,

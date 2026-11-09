@@ -31,6 +31,7 @@ struct Fo4Entity {
     bool cell_is_interior = false;
     float position[3]{};
     std::string name;
+    bool vendor_chest = false;
 };
 
 struct Fo4EntitySnapshot {
@@ -126,6 +127,7 @@ struct Fo4EntityScanOptions {
     bool loot_items = false;
     bool loot_inventories = false;
     bool harvest = false;
+    bool loot_vendor_chests = false;
     bool operator==(const Fo4EntityScanOptions& other) const;
 };
 
@@ -220,3 +222,6 @@ void fo4hud_submit_trap_candidates(const Fo4EntitySnapshot& snapshot, bool enabl
 void fo4hud_traps_tick(uintptr_t image, void* player);
 std::vector<Fo4TrapMarker> fo4hud_read_trap_markers();
 bool fo4hud_trap_reference_live(const Fo4Entity& entity, float position[3], bool allow_destroyed = false);
+
+// Confirm both the reference and base identities against vendor record metadata.
+const char* fo4hud_vendor_chest_name(uintptr_t reference);
